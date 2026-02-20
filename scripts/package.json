@@ -1,0 +1,7 @@
+{
+  "name": "siem-log-generator",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sample log generator for SIEM dashboard",
+  "main": "generate-logs.js"
+}
