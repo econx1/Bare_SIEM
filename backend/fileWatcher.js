@@ -89,63 +89,72 @@ export class FileWatcher extends EventEmitter {
   /**
    * Check for new lines in the file
    */
-  async checkForNewLines() {
+  checkForNewLines() {
     if (this._isReading) {
       this._needsRecheck = true;
       return;
     }
 
     this._isReading = true;
-    try {
-      if (!fs.existsSync(this.filePath)) {
-        // File was deleted or moved
-        this.emit('error', new Error(`File no longer exists: ${this.filePath}`));
-        return;
-      }
-
-      const stats = await fs.promises.stat(this.filePath);
-      const currentSize = stats.size;
-
-      // File was truncated or rotated (size decreased)
-      if (currentSize < this.lastPosition) {
-        this.lastPosition = 0;
-        this._remainder = '';
-      }
-
-      // New content available
-      if (currentSize > this.lastPosition) {
-        const readLen = currentSize - this.lastPosition;
-        const fh = await fs.promises.open(this.filePath, 'r');
+    
+    // Use setImmediate to make this async without blocking
+    setImmediate(async () => {
+      try {
+        // Check if file exists
         try {
-          const buffer = Buffer.allocUnsafe(readLen);
-          await fh.read(buffer, 0, readLen, this.lastPosition);
+          await fs.promises.access(this.filePath);
+        } catch {
+          this.emit('error', new Error(`File no longer exists: ${this.filePath}`));
+          this._isReading = false;
+          return;
+        }
 
-          const chunk = buffer.toString('utf8');
-          let combined = this._remainder + chunk;
+        const stats = await fs.promises.stat(this.filePath);
+        const currentSize = stats.size;
 
-          const endsWithNewline = combined.endsWith('\n');
-          const parts = combined.split('\n');
+        // File was truncated or rotated (size decreased)
+        if (currentSize < this.lastPosition) {
+          this.lastPosition = 0;
+          this._remainder = '';
+        }
 
-          this._remainder = endsWithNewline ? '' : (parts.pop() ?? '');
+        // New content available
+        if (currentSize > this.lastPosition) {
+          const readLen = currentSize - this.lastPosition;
+          const fh = await fs.promises.open(this.filePath, 'r');
+          try {
+            const buffer = Buffer.allocUnsafe(readLen);
+            const result = await fh.read(buffer, 0, readLen, this.lastPosition);
 
-          for (const line of parts) {
-            if (line.trim()) this.emit('line', line);
+            const chunk = buffer.toString('utf8', 0, result.bytesRead);
+            let combined = this._remainder + chunk;
+
+            const endsWithNewline = combined.endsWith('\n');
+            const parts = combined.split('\n');
+
+            this._remainder = endsWithNewline ? '' : (parts.pop() ?? '');
+
+            for (const line of parts) {
+              if (line.trim()) {
+                this.emit('line', line);
+              }
+            }
+
+            this.lastPosition = currentSize;
+          } finally {
+            await fh.close();
           }
-
-          this.lastPosition = currentSize;
-        } finally {
-          await fh.close();
+        }
+      } catch (error) {
+        this.emit('error', error);
+      } finally {
+        this._isReading = false;
+        if (this._needsRecheck) {
+          this._needsRecheck = false;
+          this.checkForNewLines();
         }
       }
-    } catch (error) {
-      this.emit('error', error);
-    } finally {
-      this._isReading = false;
-      if (this._needsRecheck) {
-        this._needsRecheck = false;
-        queueMicrotask(() => this.checkForNewLines());
-      }
-    }
+    });
   }
 
   /**
